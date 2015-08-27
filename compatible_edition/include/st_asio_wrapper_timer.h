@@ -41,9 +41,8 @@ namespace st_asio_wrapper
 {
 
 //timers are identified by id.
-//for the same timer in the same st_timer, set_timer and stop_timer are not thread safe,
-//please pay special attention. to resolve this defect, we must add a mutex member variable to timer_info,
-//it's not worth
+//for the same timer in the same st_timer, set_timer and stop_timer are not thread safe, please pay special attention.
+//to resolve this defect, we must add a mutex member variable to timer_info, it's not worth
 //
 //suppose you have more than one service thread(see st_service_pump for service thread number control), then:
 //same st_timer, same timer, on_timer is called sequentially
@@ -77,14 +76,18 @@ public:
 	{
 		object_type ti = {id};
 
-		boost::mutex::scoped_lock lock(timer_can_mutex);
+		timer_can_mutex.lock_upgrade();
 		BOOST_AUTO(iter, timer_can.find(ti));
 		if (iter == timer_can.end())
 		{
+			timer_can_mutex.unlock_upgrade_and_lock();
 			iter = timer_can.insert(ti).first;
+			timer_can_mutex.unlock();
+
 			iter->timer = boost::make_shared<boost::asio::deadline_timer>(boost::ref(io_service_));
 		}
-		lock.unlock();
+		else
+			timer_can_mutex.unlock_upgrade();
 
 		iter->status = object_type::TIMER_OK;
 		iter->milliseconds = milliseconds;
@@ -97,7 +100,7 @@ public:
 	{
 		object_type ti = {id};
 
-		boost::mutex::scoped_lock lock(timer_can_mutex);
+		boost::shared_lock<boost::shared_mutex> lock(timer_can_mutex);
 		BOOST_AUTO(iter, timer_can.find(ti));
 		if (iter != timer_can.end())
 		{
@@ -112,8 +115,7 @@ public:
 	DO_SOMETHING_TO_ALL_MUTEX(timer_can, timer_can_mutex)
 	DO_SOMETHING_TO_ONE_MUTEX(timer_can, timer_can_mutex)
 
-	void stop_all_timer()
-		{do_something_to_all(boost::bind((void (st_timer::*) (object_type&)) &st_timer::stop_timer, this, _1));}
+	void stop_all_timer() {do_something_to_all(boost::bind((void (st_timer::*) (object_type&)) &st_timer::stop_timer, this, _1));}
 
 protected:
 	//return true to continue the timer, or the timer will stop
@@ -122,8 +124,7 @@ protected:
 	void start_timer(object_ctype& ti)
 	{
 		ti.timer->expires_from_now(boost::posix_time::milliseconds(ti.milliseconds));
-		ti.timer->async_wait(boost::bind(&st_timer::timer_handler, this,
-			boost::asio::placeholders::error, boost::ref(ti)));
+		ti.timer->async_wait(boost::bind(&st_timer::timer_handler, this, boost::asio::placeholders::error, boost::ref(ti)));
 	}
 
 	void stop_timer(object_type& ti)
@@ -141,7 +142,7 @@ protected:
 
 	boost::asio::io_service& io_service_;
 	container_type timer_can;
-	boost::mutex timer_can_mutex;
+	boost::shared_mutex timer_can_mutex;
 };
 
 } //namespace

@@ -362,12 +362,40 @@
  * Add support for msg customization.
  * The most representative usage of this new feature is send memory-mapped files with stream protocol.
  * Demonstrated how to use custom msg buffer(default buffer is std::string) in demo asio_client.
+ *
+ * 5.0	2015.7.5
+ * Dropped DEFAULT_SSL_METHOD macro, now you must explicitly specify the SSL method for st_tcp_client_base and st_ssl_server_socket_base.
+ * More conveniences for replacing packer and unpacker at runtime (please define REPLACEABLE_BUFFER macro), see demo file_client and file_server for more details.
+ * Added msg type definition to the packer, so all classes who need msg type template parameters were simplified (not need msg type template parameters any more).
+ * Added more functions to i_packer for better suing (like send_msg series functions).
+ * Added udp unpacker, actually udp msg doesn't need unpacking, but we may need different msg types, not only std::string.
+ * Perfected makefiles: generate dependences automatically.
+ * Upgraded the pem files from 512 bits to 1024 bits to satisfy newer OpenSSL.
+ *
+ * 5.1	2015.7.12
+ * Added ID (integer type of uint64_t, auto increase) support to objects.
+ * Changed the type of objects container from list to set.
+ *
+ * 5.2	2015.7.19
+ * Replaced boost::container::set by boost::unordered::unordered_set.
+ *
+ * 5.2.1	2015.7.25
+ * Added a new buffer--inflexible_buffer(its predecessor is my_msg_buffer in asio_client), and corresponding inflexible_packer and inflexible_unpacker.
+ * Moved the typedef of msg_type and msg_ctype from packers and unpackers to i_packer and i_unpacker/i_udp_unpacker.
+ * Fixed the possibility of race condition in on_all_msg_send.
+ * Dropped fixed_length_packer, use packer(the default packer) instead.
+ * i_service::init() will now return boolean value to indicate whether the initialization was succeeded or not.
+  *
+  * 5.2.2	2015.8.20
+ * Packer and unpacker now can have different msg types, for example, use std::string when sending msgs, use inflexible_buffer when receiving msgs,
+ * see asio_client for more details.
+ * Dropped inflexible_packer, changed inflexible_unpacker to unbuffered_unpacker, just the class name.
  */
 
 #ifndef ST_ASIO_WRAPPER_H_
 #define ST_ASIO_WRAPPER_H_
 
-#define ST_ASIO_WRAPPER_VERSION 30900
+#define ST_ASIO_WRAPPER_VERSION 50202
 
 #if !defined _MSC_VER && !defined __GNUC__
 #error st_asio_wrapper only support vc and gcc.

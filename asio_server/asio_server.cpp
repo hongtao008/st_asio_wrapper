@@ -8,26 +8,17 @@
 //use the following macro to control the type of packer and unpacker
 #define PACKER_UNPACKER_TYPE	1
 //1-default packer and unpacker, head(length) + body
-//2-fixed length packer and unpacker
+//2-fixed length unpacker
 //3-prefix and suffix packer and unpacker
 
-#if 2 == PACKER_UNPACKER_TYPE
-#define DEFAULT_PACKER	fixed_legnth_packer
+#if 1 == PACKER_UNPACKER_TYPE
+//#define REPLACEABLE_BUFFER
+#elif 2 == PACKER_UNPACKER_TYPE
 #define DEFAULT_UNPACKER fixed_length_unpacker
-#endif
-#if 3 == PACKER_UNPACKER_TYPE
+#elif 3 == PACKER_UNPACKER_TYPE
 #define DEFAULT_PACKER prefix_suffix_packer
 #define DEFAULT_UNPACKER prefix_suffix_unpacker
 #endif
-
-//the following three macro demonstrate how to support huge msg(exceed 65535 - 2).
-//huge msg consume huge memory, for example, if we support 1M msg size, because every st_tcp_socket has a
-//private unpacker which has a buffer at lest 1M size, so 1K st_tcp_socket will consume 1G memory.
-//if we consider the send buffer and recv buffer, the buffer's default max size is 1K, so, every st_tcp_socket
-//can consume 2G(2 * 1M * 1K) memory when performance testing(both send buffer and recv buffer are full).
-//#define HUGE_MSG
-//#define MAX_MSG_LEN (1024 * 1024)
-//#define MAX_MSG_NUM 8 //reduce buffer size to reduce memory occupation
 //configuration
 
 #include "../include/st_asio_wrapper_server.h"
@@ -40,39 +31,35 @@ using namespace st_asio_wrapper;
 #define SUSPEND_COMMAND	"suspend"
 #define RESUME_COMMAND	"resume"
 
-//demonstrates how to use custom packer
-//in the default behavior, each st_tcp_socket has their own packer, and cause memory waste
+//demonstrate how to use custom packer
+//under the default behavior, each st_tcp_socket has their own packer, and cause memory waste
 //at here, we make each echo_socket use the same global packer for memory saving
 //notice: do not do this for unpacker, because unpacker has member variables and can't share each other
-#if 1 == PACKER_UNPACKER_TYPE
-auto global_packer(boost::make_shared<packer>());
-#endif
-#if 2 == PACKER_UNPACKER_TYPE
-auto global_packer(boost::make_shared<fixed_legnth_packer>());
-#endif
-#if 3 == PACKER_UNPACKER_TYPE
+#if 1 == PACKER_UNPACKER_TYPE || 2 == PACKER_UNPACKER_TYPE
+auto global_packer(boost::make_shared<DEFAULT_PACKER>());
+#elif 3 == PACKER_UNPACKER_TYPE
 auto global_packer(boost::make_shared<prefix_suffix_packer>());
 #endif
 
-//demonstrates how to control the type of st_server_socket_base::server from template parameters
+//demonstrate how to control the type of st_server_socket_base::server from template parameter
 class i_echo_server : public i_server
 {
 public:
 	virtual void test() = 0;
 };
 
-class echo_socket : public st_server_socket_base<std::string, boost::asio::ip::tcp::socket, i_echo_server>
+class echo_socket : public st_server_socket_base<DEFAULT_PACKER, DEFAULT_UNPACKER, i_echo_server>
 {
 public:
 	echo_socket(i_echo_server& server_) : st_server_socket_base(server_)
 	{
 		inner_packer(global_packer);
+
 #if 2 == PACKER_UNPACKER_TYPE
 		dynamic_cast<fixed_length_unpacker*>(&*inner_unpacker())->fixed_length(1024);
-#endif
-#if 3 == PACKER_UNPACKER_TYPE
-		dynamic_cast<prefix_suffix_unpacker*>(&*inner_unpacker())->prefix_suffix("begin", "end");
+#elif 3 == PACKER_UNPACKER_TYPE
 		dynamic_cast<prefix_suffix_packer*>(&*inner_packer())->prefix_suffix("begin", "end");
+		dynamic_cast<prefix_suffix_unpacker*>(&*inner_unpacker())->prefix_suffix("begin", "end");
 #endif
 	}
 
@@ -94,12 +81,28 @@ protected:
 	//msg handling: send the original msg back(echo server)
 #ifndef FORCE_TO_USE_MSG_RECV_BUFFER
 	//this virtual function doesn't exists if FORCE_TO_USE_MSG_RECV_BUFFER been defined
-	virtual bool on_msg(std::string& msg) {post_msg(msg); return true;}
+	virtual bool on_msg(out_msg_type& msg)
+	{
+	#if 2 == PACKER_UNPACKER_TYPE
+		//we don't have fixed_length_packer, so use packer instead, but need to pack msgs with native manner.
+		return post_native_msg(msg.data(), msg.size());
+	#else
+		return post_msg(msg.data(), msg.size());
+	#endif
+	}
 #endif
-	//we should handle the msg in on_msg_handle for time-consuming task like this:
-	virtual bool on_msg_handle(std::string& msg, bool link_down) {return send_msg(msg);}
+	//we should handle msg in on_msg_handle for time-consuming task like this:
+	virtual bool on_msg_handle(out_msg_type& msg, bool link_down)
+	{
+	#if 2 == PACKER_UNPACKER_TYPE
+		//we don't have fixed_length_packer, so use packer instead, but need to pack msgs with native manner.
+		return send_native_msg(msg.data(), msg.size());
+	#else
+		return send_msg(msg.data(), msg.size());
+	#endif
+	}
 	//please remember that we have defined FORCE_TO_USE_MSG_RECV_BUFFER, so, st_tcp_socket will directly
-	//use the msg recv buffer, and we need not rewrite on_msg(), which doesn't exists any more
+	//use msg recv buffer, and we need not rewrite on_msg(), which doesn't exists any more
 	//msg handling end
 };
 
@@ -112,18 +115,37 @@ public:
 	virtual void test() {/*puts("in echo_server::test()");*/}
 };
 
-int main() {
-	puts("type quit to end these two servers.");
+int main(int argc, const char* argv[])
+{
+	printf("usage: asio_server [<port=%d> [ip=0.0.0.0]]\n", SERVER_PORT);
+	puts("normal server's port will be 100 larger.");
+	puts("type " QUIT_COMMAND " to end.");
 
-	std::string str;
 	st_service_pump service_pump;
-	st_server server_(service_pump); //only need a simple server? you can directly use st_server
-	server_.set_server_addr(SERVER_PORT + 100);
+	//only need a simple server? you can directly use st_server or st_server_base.
+	//because we use st_server_socket_base directly, so this server cannot support fixed_length_unpacker and prefix_suffix_packer/prefix_suffix_unpacker,
+	//the reason is these packer and unpacker need additional initializations that st_server_socket_base not implemented, see echo_socket's constructor for more details.
+	typedef st_server_socket_base<packer, unpacker> normal_server_socket;
+	st_server_base<normal_server_socket> server_(service_pump);
 	echo_server echo_server_(service_pump); //echo server
+
+	if (argc > 2)
+	{
+		server_.set_server_addr(atoi(argv[1]) + 100, argv[2]);
+		echo_server_.set_server_addr(atoi(argv[1]), argv[2]);
+	}
+	else if (argc > 1)
+	{
+		server_.set_server_addr(atoi(argv[1]) + 100);
+		echo_server_.set_server_addr(atoi(argv[1]));
+	}
+	else
+		server_.set_server_addr(SERVER_PORT + 100);
 
 	service_pump.start_service(1);
 	while(service_pump.is_running())
 	{
+		std::string str;
 		std::cin >> str;
 		if (str == QUIT_COMMAND)
 			service_pump.stop_service();
@@ -134,17 +156,14 @@ int main() {
 		}
 		else if (str == LIST_STATUS)
 		{
-			printf("normal server:\nvalid links: " size_t_format ", closed links: " size_t_format "\n",
-				server_.size(), server_.closed_object_size());
-
-			printf("echo server:\nvalid links: " size_t_format ", closed links: " size_t_format "\n",
-				echo_server_.size(), echo_server_.closed_object_size());
+			printf("normal server:\nvalid links: " size_t_format ", closed links: " size_t_format "\n", server_.size(), server_.closed_object_size());
+			printf("echo server:\nvalid links: " size_t_format ", closed links: " size_t_format "\n", echo_server_.size(), echo_server_.closed_object_size());
 		}
 		//the following two commands demonstrate how to suspend msg dispatching, no matter recv buffer been used or not
 		else if (str == SUSPEND_COMMAND)
-			echo_server_.do_something_to_all(boost::bind(&echo_socket::suspend_dispatch_msg, _1, true));
+			echo_server_.do_something_to_all([](echo_server::object_ctype& item) {item->suspend_dispatch_msg(true);});
 		else if (str == RESUME_COMMAND)
-			echo_server_.do_something_to_all(boost::bind(&echo_socket::suspend_dispatch_msg, _1, false));
+			echo_server_.do_something_to_all([](echo_server::object_ctype& item) {item->suspend_dispatch_msg(false);});
 		else if (str == LIST_ALL_CLIENT)
 		{
 			puts("clients from normal server:");
@@ -153,7 +172,20 @@ int main() {
 			echo_server_.list_all_object();
 		}
 		else
-			server_.broadcast_msg(str.data(), str.size() + 1);
+		{
+			//broadcast series functions call pack_msg for each client respectively, because clients may used different protocols(so different type of packers, of course)
+//			server_.broadcast_msg(str.data(), str.size() + 1);
+			//send \0 character too, because asio_client used inflexible_buffer as its msg type, it will not append \0 character automatically as std::string does,
+			//so need \0 character when printing it.
+
+			//if all clients used the same protocol, we can pack msg one time, and send it repeatedly like this:
+			packer p;
+			auto msg = p.pack_msg(str.data(), str.size() + 1);
+			//send \0 character too, because asio_client used inflexible_buffer as its msg type, it will not append \0 character automatically as std::string does,
+			//so need \0 character when printing it.
+			if (!msg.empty())
+				server_.do_something_to_all([&msg](st_server_base<normal_server_socket>::object_ctype& item) {item->direct_send_msg(msg);});
+		}
 	}
 
 	return 0;
@@ -161,9 +193,10 @@ int main() {
 
 //restore configuration
 #undef SERVER_PORT
-#undef REUSE_OBJECT //use objects pool
-//#undef FORCE_TO_USE_MSG_RECV_BUFFER //force to use the msg recv buffer
+#undef REUSE_OBJECT
+//#undef FORCE_TO_USE_MSG_RECV_BUFFER
 #undef ENHANCED_STABILITY
+//#undef REPLACEABLE_BUFFER
 
 //#undef HUGE_MSG
 //#undef MAX_MSG_LEN

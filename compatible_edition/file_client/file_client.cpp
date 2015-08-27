@@ -4,11 +4,7 @@
 
 //configuration
 #define SERVER_PORT		5051
-#define FORCE_TO_USE_MSG_RECV_BUFFER
-#define MAX_MSG_LEN		(HEAD_LEN + 1 + 4096)
-	//read 4096 bytes from disk file one time will gain the best I/O performance
-	//HEAD_LEN is used by the default packer
-	//1 is the head length(see the protocol in file_client.h)
+#define REPLACEABLE_BUFFER
 //configuration
 
 #include "file_client.h"
@@ -23,11 +19,10 @@ __off64_t file_size;
 
 int main(int argc, const char* argv[])
 {
-	puts("this is a file client.");
-	printf("usage: asio_client [<port=%d> [<ip=%s> [link num=1]]]\n", SERVER_PORT, SERVER_IP);
-	puts("type quit to end this client.");
+	puts("this is a file transfer client.");
+	printf("usage: file_client [<port=%d> [<ip=%s> [link num=1]]]\n", SERVER_PORT, SERVER_IP);
+	puts("type " QUIT_COMMAND " to end.");
 
-	std::string str;
 	st_service_pump service_pump;
 	file_client client(service_pump);
 
@@ -49,6 +44,7 @@ int main(int argc, const char* argv[])
 	service_pump.start_service();
 	while(service_pump.is_running())
 	{
+		std::string str;
 		std::getline(std::cin, str);
 		if (str == QUIT_COMMAND)
 			service_pump.stop_service();
@@ -57,26 +53,24 @@ int main(int argc, const char* argv[])
 			service_pump.stop_service();
 			service_pump.start_service();
 		}
-		else if (str.size() > sizeof(REQUEST_FILE) &&
-			!strncmp(REQUEST_FILE, str.data(), sizeof(REQUEST_FILE) - 1) &&
-			isspace(str[sizeof(REQUEST_FILE) - 1]))
+		else if (str.size() > sizeof(REQUEST_FILE) && !strncmp(REQUEST_FILE, str.data(), sizeof(REQUEST_FILE) - 1) && isspace(str[sizeof(REQUEST_FILE) - 1]))
 		{
 			str.erase(0, sizeof(REQUEST_FILE));
 			boost::char_separator<char> sep(" \t");
 			boost::tokenizer<boost::char_separator<char> > tok(str, sep);
 			for (BOOST_AUTO(iter, tok.begin()); iter != tok.end(); ++iter)
 			{
-				completed_client_num.store(0);
+				completed_client_num = 0;
 				file_size = 0;
 				boost::timer::cpu_timer begin_time;
-				if (client.at(0)->get_file(*iter))
-				{
-					for (int i = 1; i < link_num; ++i)
-						client.at(i)->get_file(*iter);
 
-					printf("transfer %s begin.\n", iter->data());
+				printf("transfer %s begin.\n", iter->data());
+				if (client.find(0)->get_file(*iter))
+				{
+					client.do_something_to_all(boost::bind(&file_socket::get_file, _1, boost::cref(*iter)));
+
 					unsigned percent = -1;
-					while (completed_client_num.load() != (unsigned short) link_num)
+					while (completed_client_num != (unsigned short) link_num)
 					{
 						boost::this_thread::sleep(boost::get_system_time() + boost::posix_time::milliseconds(50));
 						if (file_size > 0)
@@ -98,6 +92,8 @@ int main(int argc, const char* argv[])
 					double used_time = (double) (begin_time.elapsed().wall / 1000000) / 1000;
 					printf("\r100%%\ntransfer %s end, speed: %.0f kB/s.\n", iter->data(), file_size / used_time / 1024);
 				}
+				else
+					printf("transfer %s failed!\n", iter->data());
 			}
 		}
 		else
@@ -109,6 +105,5 @@ int main(int argc, const char* argv[])
 
 //restore configuration
 #undef SERVER_PORT
-#undef FORCE_TO_USE_MSG_RECV_BUFFER
-#undef MAX_MSG_LEN
+#undef REPLACEABLE_BUFFER
 //restore configuration

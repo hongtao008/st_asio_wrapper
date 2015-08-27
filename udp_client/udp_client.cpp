@@ -1,4 +1,8 @@
 
+//configuration
+//#define REPLACEABLE_BUFFER
+//configuration
+
 #include "../include/st_asio_wrapper_udp_client.h"
 using namespace st_asio_wrapper;
 
@@ -13,8 +17,7 @@ int main(int argc, const char* argv[]) {
 
 	auto local_port = (unsigned short) atoi(argv[1]);
 	boost::system::error_code ec;
-	auto peer_addr = boost::asio::ip::udp::endpoint(
-        boost::asio::ip::address::from_string(argc >= 4 ? argv[3] : "127.0.0.1", ec), (unsigned short) atoi(argv[2]));
+	auto peer_addr = boost::asio::ip::udp::endpoint(boost::asio::ip::address::from_string(argc >= 4 ? argv[3] : "127.0.0.1", ec), (unsigned short) atoi(argv[2]));
 	assert(!ec);
 
 	std::string str;
@@ -39,3 +42,7 @@ int main(int argc, const char* argv[]) {
 
 	return 0;
 }
+
+//restore configuration
+//#undef REPLACEABLE_BUFFER
+//restore configuration

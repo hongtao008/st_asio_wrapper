@@ -27,45 +27,62 @@
 namespace st_asio_wrapper
 {
 
-//return (size_t) -1 means length exceeded the MAX_MSG_LEN
-size_t msg_size_check(size_t pre_len, const char* const pstr[], const size_t len[], size_t num)
+class packer_helper
 {
-	if (NULL == pstr || NULL == len)
-		return -1;
+public:
+	//return (size_t) -1 means length exceeded the MSG_BUFFER_SIZE
+	static size_t msg_size_check(size_t pre_len, const char* const pstr[], const size_t len[], size_t num)
+	{
+		if (NULL == pstr || NULL == len)
+			return -1;
 
-	size_t total_len = pre_len;
-	size_t last_total_len = total_len;
-	for (size_t i = 0; i < num; ++i)
-		if (NULL != pstr[i])
-		{
-			total_len += len[i];
-			if (last_total_len > total_len || total_len > MAX_MSG_LEN) //overflow
+		size_t total_len = pre_len;
+		size_t last_total_len = total_len;
+		for (size_t i = 0; i < num; ++i)
+			if (NULL != pstr[i])
 			{
-				unified_out::error_out("pack msg error: length exceeded the MAX_MSG_LEN!");
-				return -1;
+				total_len += len[i];
+				if (last_total_len > total_len || total_len > MSG_BUFFER_SIZE) //overflow
+				{
+					unified_out::error_out("pack msg error: length exceeded the MSG_BUFFER_SIZE!");
+					return -1;
+				}
+				last_total_len = total_len;
 			}
-			last_total_len = total_len;
-		}
 
-	return total_len;
-}
+		return total_len;
+	}
+};
 
 template<typename MsgType>
 class i_packer
 {
 public:
-	virtual bool pack_msg(MsgType& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false) = 0;
+	typedef MsgType msg_type;
+	typedef const msg_type msg_ctype;
+
+protected:
+	virtual ~i_packer() {}
+
+public:
+	virtual void reset_state() {}
+	virtual bool pack_msg(msg_type& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false) = 0;
+
+	bool pack_msg(msg_type& msg, const char* pstr, size_t len, bool native = false) {return pack_msg(msg, &pstr, &len, 1, native);}
+	bool pack_msg(msg_type& msg, const std::string& str, bool native = false) {return pack_msg(msg, str.data(), str.size(), native);}
 };
 
 class packer : public i_packer<std::string>
 {
 public:
-	static size_t get_max_msg_size() {return MAX_MSG_LEN - HEAD_LEN;}
-	virtual bool pack_msg(std::string& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false)
+	static size_t get_max_msg_size() {return MSG_BUFFER_SIZE - HEAD_LEN;}
+
+	using i_packer<msg_type>::pack_msg;
+	virtual bool pack_msg(msg_type& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false)
 	{
 		msg.clear();
 		size_t pre_len = native ? 0 : HEAD_LEN;
-		size_t total_len = msg_size_check(pre_len, pstr, len, num);
+		size_t total_len = packer_helper::msg_size_check(pre_len, pstr, len, num);
 		if ((size_t) -1 == total_len)
 			return false;
 		else if (total_len > pre_len)
@@ -95,55 +112,42 @@ public:
 	}
 };
 
-class fixed_legnth_packer : public i_packer<std::string>
+class replaceable_packer : public i_packer<replaceable_buffer>
 {
 public:
-	virtual bool pack_msg(std::string& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false)
+	using i_packer<msg_type>::pack_msg;
+	virtual bool pack_msg(msg_type& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false)
 	{
 		msg.clear();
-		if (NULL != pstr && NULL != len)
+		packer p;
+		packer::msg_type str;
+		if (p.pack_msg(str, pstr, len, num, native))
 		{
-			size_t total_len = 0;
-			size_t last_total_len = total_len;
-			for (size_t i = 0; i < num; ++i)
-				if (NULL != pstr[i])
-				{
-					total_len += len[i];
-					if (last_total_len > total_len || total_len > MAX_MSG_LEN) //overflow
-					{
-						unified_out::error_out("pack msg error: length exceeds the MAX_MSG_LEN!");
-						return false;
-					}
-					last_total_len = total_len;
-				}
+			BOOST_AUTO(com, boost::make_shared<buffer>());
+			com->swap(str);
+			msg.raw_buffer(com);
 
-			if (total_len > 0)
-			{
-				msg.reserve(total_len);
-				for (size_t i = 0; i < num; ++i)
-					if (NULL != pstr[i])
-						msg.append(pstr[i], len[i]);
-			}
-		} //if (NULL != pstr && NULL != len)
+			return true;
+		}
 
-		return true;
+		return false;
 	}
 };
 
 class prefix_suffix_packer : public i_packer<std::string>
 {
 public:
-	void prefix_suffix(const std::string& prefix, const std::string& suffix)
-		{_prefix = prefix;  _suffix = suffix; assert(!suffix.empty()); assert(MAX_MSG_LEN > _prefix.size() + _suffix.size());}
+	void prefix_suffix(const std::string& prefix, const std::string& suffix) {assert(!suffix.empty() && prefix.size() + suffix.size() < MSG_BUFFER_SIZE); _prefix = prefix;  _suffix = suffix;}
 	const std::string& prefix() const {return _prefix;}
 	const std::string& suffix() const {return _suffix;}
 
 public:
-	virtual bool pack_msg(std::string& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false)
+	using i_packer<msg_type>::pack_msg;
+	virtual bool pack_msg(msg_type& msg, const char* const pstr[], const size_t len[], size_t num, bool native = false)
 	{
 		msg.clear();
 		size_t pre_len = native ? 0 : _prefix.size() + _suffix.size();
-		size_t total_len = msg_size_check(pre_len, pstr, len, num);
+		size_t total_len = packer_helper::msg_size_check(pre_len, pstr, len, num);
 		if ((size_t) -1 == total_len)
 			return false;
 		else if (total_len > pre_len)
